@@ -19,33 +19,33 @@ class FlexiCubes:
     def __init__(self, device="cuda"):
 
         self.device = device
-        self.dmc_table = torch.tensor(dmc_table, dtype=torch.long, device=device, requires_grad=False)
+        self.dmc_table = torch.tensor(dmc_table, dtype=torch.int32, device=device, requires_grad=False)
         self.num_vd_table = torch.tensor(num_vd_table,
-                                         dtype=torch.long, device=device, requires_grad=False)
+                                         dtype=torch.int32, device=device, requires_grad=False)
         self.check_table = torch.tensor(
             check_table,
-            dtype=torch.long, device=device, requires_grad=False)
+            dtype=torch.int16, device=device, requires_grad=False)
 
-        self.tet_table = torch.tensor(tet_table, dtype=torch.long, device=device, requires_grad=False)
-        self.quad_split_1 = torch.tensor([0, 1, 2, 0, 2, 3], dtype=torch.long, device=device, requires_grad=False)
-        self.quad_split_2 = torch.tensor([0, 1, 3, 3, 1, 2], dtype=torch.long, device=device, requires_grad=False)
+        self.tet_table = torch.tensor(tet_table, dtype=torch.int32, device=device, requires_grad=False)
+        self.quad_split_1 = torch.tensor([0, 1, 2, 0, 2, 3], dtype=torch.int32, device=device, requires_grad=False)
+        self.quad_split_2 = torch.tensor([0, 1, 3, 3, 1, 2], dtype=torch.int32, device=device, requires_grad=False)
         self.quad_split_train = torch.tensor(
-            [0, 1, 1, 2, 2, 3, 3, 0], dtype=torch.long, device=device, requires_grad=False)
+            [0, 1, 1, 2, 2, 3, 3, 0], dtype=torch.int32, device=device, requires_grad=False)
 
         self.cube_corners = torch.tensor([[0, 0, 0], [1, 0, 0], [0, 1, 0], [1, 1, 0], [0, 0, 1], [
                                          1, 0, 1], [0, 1, 1], [1, 1, 1]], dtype=torch.float, device=device)
         self.cube_corners_idx = torch.pow(2, torch.arange(8, requires_grad=False))
         self.cube_edges = torch.tensor([0, 1, 1, 5, 4, 5, 0, 4, 2, 3, 3, 7, 6, 7, 2, 6,
-                                       2, 0, 3, 1, 7, 5, 6, 4], dtype=torch.long, device=device, requires_grad=False)
+                                       2, 0, 3, 1, 7, 5, 6, 4], dtype=torch.int32, device=device, requires_grad=False)
 
         self.edge_dir_table = torch.tensor([0, 2, 0, 2, 0, 2, 0, 2, 1, 1, 1, 1],
-                                           dtype=torch.long, device=device)
+                                           dtype=torch.int32, device=device)
         self.dir_faces_table = torch.tensor([
             [[5, 4], [3, 2], [4, 5], [2, 3]],
             [[5, 4], [1, 0], [4, 5], [0, 1]],
             [[3, 2], [1, 0], [2, 3], [0, 1]]
-        ], dtype=torch.long, device=device)
-        self.adj_pairs = torch.tensor([0, 1, 1, 3, 3, 2, 2, 0], dtype=torch.long, device=device)
+        ], dtype=torch.int32, device=device)
+        self.adj_pairs = torch.tensor([0, 1, 1, 3, 3, 2, 2, 0], dtype=torch.int32, device=device)
 
     def __call__(self, voxelgrid_vertices, scalar_field, cube_idx, resolution, qef_reg_scale=1e-3,
                  weight_scale=0.99, beta=None, alpha=None, gamma_f=None, voxelgrid_colors=None, training=False):
@@ -77,7 +77,7 @@ class FlexiCubes:
         if surf_cubes.sum() == 0:
             return (
                 torch.zeros((0, 3), device=self.device),
-                torch.zeros((0, 3), dtype=torch.long, device=self.device),
+                torch.zeros((0, 3), dtype=torch.uint8, device=self.device),
                 torch.zeros((0), device=self.device),
                 torch.zeros((0, voxelgrid_colors.shape[-1]), device=self.device) if voxelgrid_colors is not None else None
             )
@@ -92,10 +92,19 @@ class FlexiCubes:
         surf_edges, idx_map, edge_counts, surf_edges_mask = self._identify_surf_edges(
             scalar_field, cube_idx, surf_cubes
         )
+        del cube_idx
+        del surf_cubes
 
         vd, L_dev, vd_gamma, vd_idx_map, vd_color = self._compute_vd(
-            voxelgrid_vertices, cube_idx[surf_cubes], surf_edges, scalar_field,
-            case_ids, beta, alpha, gamma_f, idx_map, qef_reg_scale, voxelgrid_colors)
+            voxelgrid_vertices, surf_edges, scalar_field,
+            case_ids, beta, alpha, gamma_f, idx_map, voxelgrid_colors)
+        del voxelgrid_vertices
+        del voxelgrid_colors
+        del case_ids
+        del beta
+        del alpha
+        del gamma_f
+
         vertices, faces, s_edges, edge_indices, vertices_color = self._triangulate(
             scalar_field, surf_edges, vd, vd_gamma, edge_counts, idx_map,
             vd_idx_map, surf_edges_mask, training, vd_color)
@@ -141,8 +150,9 @@ class FlexiCubes:
         ambiguity in the Dual Marching Cubes (DMC) configurations as described in Section 1.3 of the 
         supplementary material. It should be noted that this function assumes a regular grid.
         """
-        case_ids = (occ_fx8[surf_cubes] * self.cube_corners_idx.to(self.device).unsqueeze(0)).sum(-1)
-
+        # has to be int32 not uint8 as used as index
+        case_ids = (occ_fx8[surf_cubes] * self.cube_corners_idx.to(self.device).unsqueeze(0)).sum(-1, dtype=torch.int32)
+        del occ_fx8
         problem_config = self.check_table.to(self.device)[case_ids]
         to_check = problem_config[..., 0] == 1
         problem_config = problem_config[to_check]
@@ -152,8 +162,9 @@ class FlexiCubes:
         # The 'problematic_configs' only contain configurations for surface cubes. Next, we construct a 3D array,
         # 'problem_config_full', to store configurations for all cubes (with default config for non-surface cubes).
         # This allows efficient checking on adjacent cubes.
-        problem_config_full = torch.zeros(list(res) + [5], device=self.device, dtype=torch.long)
-        vol_idx = torch.nonzero(problem_config_full[..., 0] == 0)  # N, 3
+        problem_config_full = torch.zeros(list(res) + [5], device=self.device, dtype=torch.int16)
+        # has to be int32 not uint8 as used as index
+        vol_idx = torch.nonzero(problem_config_full[..., 0] == 0).to(torch.int32)  # N, 3
         vol_idx_problem = vol_idx[surf_cubes][to_check]
         problem_config_full[vol_idx_problem[..., 0], vol_idx_problem[..., 1], vol_idx_problem[..., 2]] = problem_config
         vol_idx_problem_adj = vol_idx_problem + problem_config[..., 1:4]
@@ -166,15 +177,14 @@ class FlexiCubes:
             vol_idx_problem_adj[..., 2] >= 0) & (
             vol_idx_problem_adj[..., 2] < res[2])
 
-        vol_idx_problem = vol_idx_problem[within_range]
         vol_idx_problem_adj = vol_idx_problem_adj[within_range]
         problem_config = problem_config[within_range]
         problem_config_adj = problem_config_full[vol_idx_problem_adj[..., 0],
                                                  vol_idx_problem_adj[..., 1], vol_idx_problem_adj[..., 2]]
         # If two cubes with cases C16 and C19 share an ambiguous face, both cases are inverted.
         to_invert = (problem_config_adj[..., 0] == 1)
-        idx = torch.arange(case_ids.shape[0], device=self.device)[to_check][within_range][to_invert]
-        case_ids.index_put_((idx,), problem_config[to_invert][..., -1])
+        idx = torch.arange(case_ids.shape[0], device=self.device, dtype=torch.int32)[to_check][within_range][to_invert]
+        case_ids.index_put_((idx,), problem_config[to_invert][..., -1].to(torch.int32))
         return case_ids
 
     @torch.no_grad()
@@ -187,15 +197,18 @@ class FlexiCubes:
         occ_n = scalar_field < 0
         all_edges = cube_idx[surf_cubes][:, self.cube_edges].reshape(-1, 2)
         unique_edges, _idx_map, counts = torch.unique(all_edges, dim=0, return_inverse=True, return_counts=True)
+        unique_edges = unique_edges.to(torch.int32)
+        _idx_map = _idx_map.to(torch.int32)
+        counts = counts.to(torch.uint8)
 
-        unique_edges = unique_edges.long()
+        # unique_edges = unique_edges.long()
         mask_edges = occ_n[unique_edges.reshape(-1)].reshape(-1, 2).sum(-1) == 1
 
         surf_edges_mask = mask_edges[_idx_map]
         counts = counts[_idx_map]
 
-        mapping = torch.ones((unique_edges.shape[0]), dtype=torch.long, device=cube_idx.device) * -1
-        mapping[mask_edges] = torch.arange(mask_edges.sum(), device=cube_idx.device)
+        mapping = torch.ones((unique_edges.shape[0]), dtype=torch.int32, device=cube_idx.device) * -1
+        mapping[mask_edges] = torch.arange(mask_edges.sum(), device=cube_idx.device, dtype=torch.int32)
         # Shaped as [number of cubes x 12 edges per cube]. This is later used to map a cube edge to the unique index
         # for a surface-intersecting edge. Non-surface-intersecting edges are marked with -1.
         idx_map = mapping[_idx_map]
@@ -210,7 +223,7 @@ class FlexiCubes:
         """
         occ_n = scalar_field < 0
         occ_fx8 = occ_n[cube_idx.reshape(-1)].reshape(-1, 8)
-        _occ_sum = torch.sum(occ_fx8, -1)
+        _occ_sum = torch.sum(occ_fx8, -1, dtype=torch.uint8)
         surf_cubes = (_occ_sum > 0) & (_occ_sum < 8)
         return surf_cubes, occ_fx8
 
@@ -241,8 +254,8 @@ class FlexiCubes:
         dual_verts = torch.linalg.lstsq(A, B).solution.squeeze(-1)
         return dual_verts
 
-    def _compute_vd(self, voxelgrid_vertices, surf_cubes_fx8, surf_edges, scalar_field,
-                    case_ids, beta, alpha, gamma_f, idx_map, qef_reg_scale, voxelgrid_colors):
+    def _compute_vd(self, voxelgrid_vertices, surf_edges, scalar_field,
+                    case_ids, beta, alpha, gamma_f, idx_map, voxelgrid_colors):
         """
         Computes the location of dual vertices as described in Section 4.2
         """
@@ -263,7 +276,7 @@ class FlexiCubes:
         #     vd_color = []
 
         total_num_vd = 0
-        vd_idx_map = torch.zeros((case_ids.shape[0], 12), dtype=torch.long, device=self.device, requires_grad=False)
+        vd_idx_map = torch.zeros((case_ids.shape[0], 12), dtype=torch.int32, device=self.device, requires_grad=False)
 
         for num in torch.unique(num_vd):
             cur_cubes = (num_vd == num)  # consider cubes with the same numbers of vd emitted (for batching)
@@ -285,9 +298,9 @@ class FlexiCubes:
             #     vd_color.append(color[cur_cubes].unsqueeze(1).repeat(1, num, 1).reshape(-1, 3))
             
         edge_group = torch.cat(edge_group)
-        edge_group_to_vd = torch.cat(edge_group_to_vd)
+        edge_group_to_vd = torch.cat(edge_group_to_vd).to(torch.int32)
         edge_group_to_cube = torch.cat(edge_group_to_cube)
-        vd_num_edges = torch.cat(vd_num_edges)
+        vd_num_edges = torch.cat(vd_num_edges).to(torch.int32)
         vd_gamma = torch.cat(vd_gamma)
         # if color is not None:
         #     vd_color = torch.cat(vd_color)
@@ -328,7 +341,7 @@ class FlexiCubes:
         
         L_dev = self._compute_reg_loss(vd, zero_crossing_group, edge_group_to_vd, vd_num_edges)
 
-        v_idx = torch.arange(vd.shape[0], device=self.device)  # + total_num_vd
+        v_idx = torch.arange(vd.shape[0], device=self.device, dtype=torch.int32)  # + total_num_vd
 
         vd_idx_map = (vd_idx_map.reshape(-1)).scatter(dim=0, index=edge_group_to_cube *
                                                       12 + edge_group, src=v_idx[edge_group_to_vd])
@@ -358,7 +371,7 @@ class FlexiCubes:
         gamma_13 = quad_gamma[:, 1] * quad_gamma[:, 3]
         if not training:
             mask = (gamma_02 > gamma_13)
-            faces = torch.zeros((quad_gamma.shape[0], 6), dtype=torch.long, device=quad_vd_idx.device)
+            faces = torch.zeros((quad_gamma.shape[0], 6), dtype=torch.int32, device=quad_vd_idx.device)
             faces[mask] = quad_vd_idx[mask][:, self.quad_split_1]
             faces[~mask] = quad_vd_idx[~mask][:, self.quad_split_2]
             faces = faces.reshape(-1, 3)
