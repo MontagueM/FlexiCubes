@@ -295,7 +295,7 @@ class FlexiCubes:
         #     vd_color = None
 
         vd = torch.zeros((total_num_vd, 3), device=self.device)
-        beta_sum = torch.zeros((total_num_vd, 1), device=self.device)
+        beta_sum = torch.zeros((total_num_vd, 1), device=self.device, dtype=beta.dtype)
 
         idx_group = torch.gather(input=idx_map.reshape(-1), dim=0, index=edge_group_to_cube * 12 + edge_group)
 
@@ -319,7 +319,7 @@ class FlexiCubes:
         interpolate colors use the same method as dual vertices
         '''
         if voxelgrid_colors is not None:
-            vd_color = torch.zeros((total_num_vd, C), device=self.device)
+            vd_color = torch.zeros((total_num_vd, C), device=self.device, dtype=voxelgrid_colors.dtype)
             c_group = torch.index_select(input=surf_edges_c, index=idx_group.reshape(-1), dim=0).reshape(-1, 2, C)
             uc_group = self._linear_interp(s_group * alpha_group, c_group)
             vd_color = vd_color.index_add_(0, index=edge_group_to_vd, source=uc_group * beta_group) / beta_sum
